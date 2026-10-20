@@ -5,6 +5,8 @@ import type {
 } from "@dev.fast/review-protocol";
 import { z } from "zod";
 
+import { readGitHubPullRequests } from "./github-pr-graph.js";
+
 const GitHubStacksSchema = z.array(
   z.object({
     pull_requests: z.array(
@@ -18,11 +20,13 @@ const GitHubStacksSchema = z.array(
 
 export type RunGitHubApi = (host: string, endpoint: string) => Promise<string>;
 
-type Subject = Pick<ReviewApiSummary, "origin"> & { reviewId?: string };
+type Subject = Pick<ReviewApiSummary, "origin" | "source"> & {
+  reviewId?: string;
+};
 
 type Candidate = Pick<
   ReviewApiSummary,
-  "reviewId" | "title" | "origin" | "pins" | "trashedAt" | "project"
+  "reviewId" | "title" | "origin" | "source" | "pins" | "trashedAt" | "project"
 >;
 
 interface StackEntry {
@@ -46,6 +50,16 @@ export async function resolveReviewStackLayers(
     reviews,
     options.runGitHubApi ?? defaultRunGitHubApi,
   );
+
+  if (entries.length < 2) {
+    const discovered = await ordinaryGitHubStack(
+      subject,
+      reviews,
+      options.runGitHubApi ?? defaultRunGitHubApi,
+    ).catch(() => []);
+
+    if (discovered.length > 1) entries = discovered;
+  }
 
   if (!entries.length && options.repositoryPath)
     entries = await localStack(subject, reviews, options.repositoryPath);
@@ -83,7 +97,9 @@ async function gitHubStack(
   reviews: readonly Candidate[],
   runGitHubApi: RunGitHubApi,
 ): Promise<StackEntry[]> {
-  const binding = subject.origin?.pullRequestUrl?.match(
+  const binding = (
+    subject.source?.pullRequest?.url ?? subject.origin?.pullRequestUrl
+  )?.match(
     /^https:\/\/([a-z0-9.-]+)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9]\d*)$/,
   );
 
@@ -128,6 +144,82 @@ async function gitHubStack(
   }));
 }
 
+/** Discover PR relationships first; whiteboards only annotate the result. */
+async function ordinaryGitHubStack(
+  subject: Subject,
+  reviews: readonly Candidate[],
+  run: RunGitHubApi,
+): Promise<StackEntry[]> {
+  const url =
+    subject.source?.pullRequest?.url ?? subject.origin?.pullRequestUrl;
+
+  const binding = url?.match(
+    /^https:\/\/([a-z0-9.-]+)\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9]\d*)$/,
+  );
+
+  if (!binding) return [];
+  const [, host, slug, number] = binding;
+  const graph = await readGitHubPullRequests(host!, slug!, run);
+  const current = graph.find((pr) => pr.number === Number(number));
+
+  if (!current) return [];
+  const chain = [current];
+  const seen = new Set([current.headBranch]);
+
+  const extend = (direction: "base" | "head") => {
+    let end = current;
+
+    for (;;) {
+      const matches = graph.filter((pr) =>
+        direction === "base"
+          ? pr.headBranch === end.baseBranch
+          : pr.baseBranch === end.headBranch,
+      );
+
+      if (matches.length !== 1 || seen.has(matches[0]!.headBranch)) return;
+      end = matches[0]!;
+      seen.add(end.headBranch);
+
+      if (direction === "base") chain.unshift(end);
+      else chain.push(end);
+    }
+  };
+
+  extend("base");
+  extend("head");
+
+  if (chain.length < 2) return [];
+
+  const project = reviews.find((review) => review.reviewId === subject.reviewId)
+    ?.project?.id;
+
+  return chain.map((pr) => ({
+    branch: pr.headBranch,
+    pullRequestNumber: pr.number,
+    pullRequestUrl: pr.url,
+    base: null,
+    subject: pr.title,
+    current: pr.number === current.number,
+    reviews: reviews.filter((review) => {
+      const candidateUrl =
+        review.source?.pullRequest?.url ?? review.origin?.pullRequestUrl;
+
+      if (candidateUrl)
+        return candidateUrl.toLowerCase() === pr.url.toLowerCase();
+
+      const sameRepository = subject.source?.repositoryId
+        ? (review.source?.repositoryId ?? review.pins?.repositoryId) ===
+          subject.source.repositoryId
+        : Boolean(project && review.project?.id === project);
+
+      return (
+        sameRepository &&
+        (review.source?.branch ?? review.origin?.branch) === pr.headBranch
+      );
+    }),
+  }));
+}
+
 /** The chain of reviews through this one, linked by the base each names. */
 async function localStack(
   subject: Subject,
@@ -137,11 +229,16 @@ async function localStack(
   const group = reviews.find((review) => review.reviewId === subject.reviewId)
     ?.project?.id;
 
-  const current = subject.origin?.branch;
+  const current = subject.source?.branch ?? subject.origin?.branch;
+
+  const currentBase =
+    subject.source?.pullRequest?.baseBranch ??
+    subject.source?.baseBranch ??
+    subject.origin?.baseBranch;
 
   if (!group || !current) return [];
 
-  const main = subject.origin?.baseBranch
+  const main = currentBase
     ? await defaultBranch(repositoryPath).catch(() => null)
     : null;
 
@@ -151,7 +248,12 @@ async function localStack(
 
   const latest = (field: "branch" | "baseBranch", branch: string) => {
     const matches = inGroup.filter(
-      (review) => review.origin?.[field] === branch,
+      (review) =>
+        (field === "branch"
+          ? (review.source?.branch ?? review.origin?.branch)
+          : (review.source?.pullRequest?.baseBranch ??
+            review.source?.baseBranch ??
+            review.origin?.baseBranch)) === branch,
     );
 
     return matches.findLast((review) => !review.trashedAt) ?? matches.at(-1);
@@ -160,16 +262,23 @@ async function localStack(
   const branches = [current];
 
   for (
-    let base = subject.origin?.baseBranch;
+    let base = currentBase;
     base && name(base) !== (main && name(main.ref)) && !branches.includes(base);
-    base = latest("branch", base)?.origin?.baseBranch
+    base =
+      latest("branch", base)?.source?.pullRequest?.baseBranch ??
+      latest("branch", base)?.source?.baseBranch ??
+      latest("branch", base)?.origin?.baseBranch
   )
     branches.unshift(base);
 
   for (
-    let child = latest("baseBranch", current)?.origin?.branch;
+    let child =
+      latest("baseBranch", current)?.source?.branch ??
+      latest("baseBranch", current)?.origin?.branch;
     child && !branches.includes(child);
-    child = latest("baseBranch", child)?.origin?.branch
+    child =
+      latest("baseBranch", child)?.source?.branch ??
+      latest("baseBranch", child)?.origin?.branch
   )
     branches.push(child);
 
@@ -193,7 +302,9 @@ async function localStack(
     base: (branch === bottom && start?.base) || null,
     subject: (branch === bottom && start?.subject) || null,
     current: branch === current,
-    reviews: inGroup.filter((review) => review.origin?.branch === branch),
+    reviews: inGroup.filter(
+      (review) => (review.source?.branch ?? review.origin?.branch) === branch,
+    ),
   }));
 }
 

@@ -2175,3 +2175,20 @@ export type ReviewFeedback = z.infer<typeof ReviewFeedbackSchema>;
 export type ReviewFeedbackSubmissionResult =
   | { ok: true }
   | { ok: false; error: "network" | "receiver" };
+
+/** Source identity is independent of a review version's comparison pins. */
+export interface ReviewSource {
+  repositoryId: string;
+  branch?: string;
+  /** The explicitly named comparison base, when supplied. */
+  baseBranch?: string;
+  pullRequest?: {
+    url: string;
+    number: number;
+    title?: string;
+    /** Absent for a PR whose head lives in a fork. */
+    headBranch?: string;
+    /** The PR's target branch, which can differ from the review's base. */
+    baseBranch?: string;
+  } | null;
+}

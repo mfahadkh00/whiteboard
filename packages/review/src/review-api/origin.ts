@@ -16,6 +16,10 @@ export function pullRequestKey(url: string): string {
   return url.toLowerCase();
 }
 
+/** Older snapshots kept origin/ on remote branch labels. */
+export const sourceBranchName = (branch: string | undefined) =>
+  branch?.replace(/^origin\//, "");
+
 /** Omission preserves identity; null detaches it without changing import metadata. */
 export function setPullRequest(
   snapshot: Pick<Snapshot, "origin">,

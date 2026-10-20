@@ -1,7 +1,7 @@
 import type { JsonObject } from "@dev.fast/json";
 
 import type { ReviewGatewayHostState } from "./contracts.js";
-import type { PullRequestState } from "./contracts.js";
+import type { PullRequestState, ReviewSource } from "./contracts.js";
 
 /** List metadata for the authenticated local catalog; document contents stay in snapshots. */
 export interface ReviewApiSummary {
@@ -19,6 +19,7 @@ export interface ReviewApiSummary {
     | { kind: "project"; repositoryId: string }
     | { kind: "worktree"; repositoryId: string; base?: string }
     | { kind: "commits"; repositoryId: string; head: string; base?: string };
+  source?: ReviewSource;
   createdAt: string;
   /** Timestamp of the earliest retained review version, when known. */
   firstCreatedAt?: string;
