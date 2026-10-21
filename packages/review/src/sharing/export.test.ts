@@ -331,6 +331,45 @@ it("shares a review's lenses and reads a bundle that holds them as document bloc
   expect(JSON.stringify(shared.document)).not.toContain("file_lens");
 });
 
+it("shares named branch comparisons without copying the sender's local source binding", async () => {
+  const { imported, id, local, reviewId } = await importFixture(
+    async ({ local, reviewId, repo }) => {
+      const pins = local.store.read(reviewId).pins!;
+      execFileSync("git", ["branch", "feature/shared-base", pins.base], {
+        cwd: repo,
+      });
+      await local.store.execute({
+        operation: {
+          type: "set_target",
+          reviewId,
+          target: {
+            kind: "commits",
+            repositoryId: pins.repositoryId,
+            base: "feature/shared-base",
+            head: "feature/shared-head",
+          },
+        },
+      });
+
+      return exportShare({ ...local, reviewId, repository });
+    },
+  );
+
+  const original = local.store.read(reviewId);
+  const shared = imported.get(id).snapshot;
+  expect(original.source?.baseBranch).toBe("feature/shared-base");
+  expect(shared.origin).toMatchObject({
+    branch: "feature/shared-head",
+    baseBranch: "feature/shared-base",
+  });
+  expect(shared.pins).toMatchObject({
+    base: original.pins!.base,
+    head: original.pins!.head,
+  });
+  expect(shared.pins!.repositoryId).not.toBe(original.pins!.repositoryId);
+  expect(shared).not.toHaveProperty("source");
+});
+
 it("fetches pinned source into an independent repository and retains complete traces offline", async () => {
   const { bundle, imported, id, repo, app, recipient } = await importFixture();
   expect(imported.get(id).snapshot.origin?.branch).toBe("feature/shared-head");

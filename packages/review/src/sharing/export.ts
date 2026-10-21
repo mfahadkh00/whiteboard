@@ -90,9 +90,10 @@ export async function exportShare(input: {
   // in its target.
   const repositoryId = boardRepositoryId(stored);
 
-  // Local-only fields stay home; the target names a local checkout.
+  // Local-only fields stay home; target and source name a local checkout.
   const {
     target,
+    source: _source,
     staleSources: _staleSources,
     sourceUnavailable: _sourceUnavailable,
     lastEdit: _lastEdit,

@@ -14,7 +14,15 @@ it("retains the document, images, maps and complete conversations without copyin
   const fixture = await createShareFixture(root);
 
   try {
+    // Source bindings belong to the sender's local repository catalog;
+    // recipients open immutable comparison pins in their own repository.
+    expect(fixture.store.read(fixture.reviewId).source).toBeDefined();
     const bundle = await exportShare(fixture);
+    expect(
+      JSON.parse(
+        Buffer.from(bundle.objects.get(bundle.manifest.snapshot)!).toString(),
+      ),
+    ).not.toHaveProperty("source");
     const parsed = validateShareBundle(bundle);
     expect(parsed.snapshot.pins).toEqual(
       fixture.store.read(fixture.reviewId).pins,
